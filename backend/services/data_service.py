@@ -20,8 +20,8 @@ _YF_SYMBOL_MAP: Dict[str, str] = {
     "EURUSD": "EURUSD=X",   # EUR/USD forex
     "GBPUSD": "GBPUSD=X",   # GBP/USD forex
     "USDJPY": "USDJPY=X",   # USD/JPY forex
-    "NAS100": "NQ=F",       # Nasdaq 100 futures
-    "SPX500": "ES=F",       # S&P 500 futures
+    "NAS100": "^NDX",       # NASDAQ 100 index (matches TradingView NAS100)
+    "SPX500": "^GSPC",      # S&P 500 index (matches TradingView SPX500)
 }
 
 # Maps Fibrios timeframe -> yfinance interval

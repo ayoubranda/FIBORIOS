@@ -1,9 +1,5 @@
 """
 Fibrios Trading Intelligence System — Streamlit frontend.
-
-Layout:
-  Left  (65 %): TradingView Advanced Chart
-  Right (35 %): Asset selector + Engine results + Claude narrative
 """
 import os
 from typing import Any, Dict, List, Optional
@@ -18,265 +14,424 @@ from core.price_action import analyze as analyze_price_action
 from core.scoring import evaluate_confidence
 from core.trade_generator import generate_trade_plan
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
+# ── Page config (must be first) ──────────────────────────────────────────────
+st.set_page_config(
+    page_title="Fibrios Intelligence",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-SYMBOLS = ["XAUUSD", "XAGUSD", "EURUSD", "GBPUSD", "USDJPY", "NAS100", "SPX500"]
+# ── CSS ──────────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* Remove Streamlit chrome */
+#MainMenu, .stDeployButton, footer, header { display: none !important; }
+[data-testid="stToolbar"] { display: none !important; }
+
+/* Global */
+body, .stApp { background: #0d1117; }
+
+/* Engine cards */
+.eng-card {
+    background: #161b22;
+    border: 1px solid #21262d;
+    border-radius: 12px;
+    padding: 18px 20px;
+    height: 100%;
+}
+.eng-title {
+    color: #8b949e;
+    font-size: .72em;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    margin-bottom: 8px;
+}
+.eng-val {
+    color: #e6edf3;
+    font-size: 1.05em;
+    font-weight: 700;
+    margin-bottom: 4px;
+}
+.eng-score-bar {
+    background: #21262d;
+    border-radius: 4px;
+    height: 4px;
+    margin: 10px 0 6px;
+}
+.eng-reason {
+    color: #6e7681;
+    font-size: .73em;
+    line-height: 1.5;
+    margin-top: 6px;
+}
+
+/* Trade plan cards */
+.tp-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 7px 0;
+    border-bottom: 1px solid #21262d;
+    font-size: .88em;
+}
+.tp-label { color: #8b949e; }
+.tp-value { color: #e6edf3; font-weight: 600; font-family: monospace; }
+
+/* Narrative */
+.narr-block {
+    background: #0d1117;
+    border: 1px solid #21262d;
+    border-left: 3px solid #388bfd;
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-bottom: 10px;
+    font-size: .88em;
+    line-height: 1.7;
+    color: #c9d1d9;
+}
+.narr-label {
+    color: #388bfd;
+    font-size: .7em;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+
+/* Divider */
+.sec-title {
+    color: #8b949e;
+    font-size: .8em;
+    text-transform: uppercase;
+    letter-spacing: .12em;
+    font-weight: 600;
+    margin: 20px 0 12px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ── Constants ────────────────────────────────────────────────────────────────
+SYMBOLS    = ["XAUUSD", "XAGUSD", "EURUSD", "GBPUSD", "USDJPY", "NAS100", "SPX500"]
 TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1D"]
 
-# TradingView symbol format used by the widget
-_TV_WIDGET_SYMBOL: Dict[str, str] = {
+_TV_SYMBOL = {
     "XAUUSD": "OANDA:XAUUSD",
     "XAGUSD": "OANDA:XAGUSD",
     "EURUSD": "FX:EURUSD",
     "GBPUSD": "FX:GBPUSD",
     "USDJPY": "FX:USDJPY",
-    "NAS100": "OANDA:NAS100",
-    "SPX500": "OANDA:SPX500",
+    "NAS100": "NASDAQ:NDX",
+    "SPX500": "SP:SPX",
 }
-
-_TV_INTERVAL: Dict[str, str] = {
+_TV_INTERVAL = {
     "1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240", "1D": "D",
 }
 
-# ---------------------------------------------------------------------------
-# TradingView chart widget
-# ---------------------------------------------------------------------------
-
-def _tradingview_widget(symbol: str, timeframe: str, theme: str = "dark") -> str:
-    tv_symbol = _TV_WIDGET_SYMBOL.get(symbol, f"OANDA:{symbol}")
-    interval = _TV_INTERVAL.get(timeframe, "15")
+# ── TradingView chart ────────────────────────────────────────────────────────
+def _tv_widget(symbol: str, tf: str) -> str:
+    tv_sym  = _TV_SYMBOL.get(symbol, f"OANDA:{symbol}")
+    interval = _TV_INTERVAL.get(tf, "15")
     return f"""
-    <div class="tradingview-widget-container" style="height:520px;width:100%;">
-      <div id="tv_chart" style="height:100%;width:100%;"></div>
-      <script type="text/javascript"
-        src="https://s3.tradingview.com/tv.js"></script>
-      <script type="text/javascript">
+    <div style="height:500px;border-radius:12px;overflow:hidden;">
+      <div id="tv_c" style="height:100%;width:100%;"></div>
+      <script src="https://s3.tradingview.com/tv.js"></script>
+      <script>
         new TradingView.widget({{
-          "autosize": true,
-          "symbol": "{tv_symbol}",
-          "interval": "{interval}",
-          "timezone": "Etc/UTC",
-          "theme": "{theme}",
-          "style": "1",
-          "locale": "en",
-          "toolbar_bg": "#1e222d",
-          "enable_publishing": false,
-          "hide_side_toolbar": false,
-          "allow_symbol_change": false,
-          "withdateranges": true,
-          "studies": ["RSI@tv-basicstudies", "MASimple@tv-basicstudies"],
-          "container_id": "tv_chart"
+          autosize: true,
+          symbol: "{tv_sym}",
+          interval: "{interval}",
+          timezone: "Etc/UTC",
+          theme: "dark",
+          style: "1",
+          locale: "en",
+          toolbar_bg: "#161b22",
+          enable_publishing: false,
+          hide_side_toolbar: false,
+          allow_symbol_change: false,
+          withdateranges: true,
+          studies: ["RSI@tv-basicstudies"],
+          container_id: "tv_c"
         }});
       </script>
-    </div>
-    """
+    </div>"""
 
-
-# ---------------------------------------------------------------------------
-# Data fetching (TradingView via data_service)
-# ---------------------------------------------------------------------------
-
+# ── Data helpers ─────────────────────────────────────────────────────────────
 @st.cache_data(ttl=60, show_spinner=False)
-def _fetch_candles(symbol: str, timeframe: str, count: int = 100) -> Optional[List[Dict[str, Any]]]:
+def _get_candles(symbol: str, tf: str) -> Optional[List[Dict]]:
     try:
         from backend.services.data_service import get_provider
-        provider = get_provider()
-        return provider.get_latest_candles(symbol, timeframe, count)
-    except Exception as exc:
-        st.warning(f"Live data unavailable ({exc}). Running engines in demo mode.")
-        return None
-
-
-@st.cache_data(ttl=60, show_spinner=False)
-def _fetch_price(symbol: str) -> Optional[float]:
-    try:
-        from backend.services.data_service import get_provider
-        provider = get_provider()
-        return provider.get_price(symbol)["price"]
+        return get_provider().get_latest_candles(symbol, tf, 100)
     except Exception:
         return None
 
-
-# ---------------------------------------------------------------------------
-# Claude narrative (optional — requires ANTHROPIC_API_KEY)
-# ---------------------------------------------------------------------------
-
-def _claude_narrative(signal_context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        return None
+@st.cache_data(ttl=60, show_spinner=False)
+def _get_price(symbol: str) -> Optional[float]:
     try:
-        from core.claude_engine import ClaudeAnalyzer
-        return ClaudeAnalyzer().analyze(signal_context)
-    except Exception as exc:
-        st.warning(f"Claude narrative unavailable: {exc}")
+        from backend.services.data_service import get_provider
+        return get_provider().get_price(symbol)["price"]
+    except Exception:
         return None
 
+# ── Claude helper ─────────────────────────────────────────────────────────────
+def _get_narrative(ctx: Dict, api_key: str) -> Optional[Dict]:
+    try:
+        os.environ["ANTHROPIC_API_KEY"] = api_key
+        from core.claude_engine import ClaudeAnalyzer
+        return ClaudeAnalyzer().analyze(ctx)
+    except Exception as e:
+        return {"market_summary": f"Error: {e}", "trade_reasoning": "", "risks": "", "institutional_narrative": ""}
 
-# ---------------------------------------------------------------------------
-# UI helpers
-# ---------------------------------------------------------------------------
+# ── Engine card renderer ──────────────────────────────────────────────────────
+def _engine_card(col, title: str, main_val: str, bias: str, reason: str, score: int) -> None:
+    b = bias.lower()
+    if "bull" in b:
+        bias_color, arrow = "#3fb950", "▲"
+    elif "bear" in b:
+        bias_color, arrow = "#f85149", "▼"
+    else:
+        bias_color, arrow = "#d29922", "◆"
+    bar_color = "#3fb950" if score >= 7 else "#d29922" if score >= 5 else "#f85149"
 
-def _metric_row(label: str, value: str, delta: Optional[str] = None) -> None:
-    st.metric(label=label, value=value, delta=delta)
+    with col:
+        st.markdown(f"""
+        <div class="eng-card">
+          <div class="eng-title">{title}</div>
+          <div class="eng-val">{main_val}</div>
+          <div style="color:{bias_color};font-size:.82em;font-weight:600">
+            {arrow} {bias.upper()}
+          </div>
+          <div class="eng-score-bar">
+            <div style="width:{score*10}%;background:{bar_color};height:100%;border-radius:4px;"></div>
+          </div>
+          <div style="color:#6e7681;font-size:.7em">Score {score}/10</div>
+          <div class="eng-reason">{reason}</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-
-def _section(title: str, data: Dict[str, Any], keys: List[str]) -> None:
-    with st.expander(title, expanded=True):
-        cols = st.columns(len(keys))
-        for col, key in zip(cols, keys):
-            col.metric(key.replace("_", " ").title(), data.get(key, "—"))
-        st.caption(data.get("reason", ""))
-
-
-# ---------------------------------------------------------------------------
-# Main application
-# ---------------------------------------------------------------------------
-
-def main() -> None:
-    st.set_page_config(
-        page_title="Fibrios Intelligence",
-        page_icon="📈",
-        layout="wide",
-        initial_sidebar_state="collapsed",
-    )
-
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+with st.sidebar:
     st.markdown(
-        "<h2 style='margin-bottom:0'>📈 Fibrios Trading Intelligence</h2>"
-        "<p style='color:#888;margin-top:0'>Powered by TradingView · Fibrios Engines · Claude AI</p>",
+        "<div style='font-size:1.4em;font-weight:800;color:#e6edf3'>📈 FIBRIOS</div>"
+        "<div style='color:#6e7681;font-size:.8em;margin-bottom:16px'>Institutional Trading Intelligence</div>",
         unsafe_allow_html=True,
     )
     st.divider()
 
-    # ----- Controls row -----
-    ctrl1, ctrl2, ctrl3 = st.columns([2, 2, 1])
-    with ctrl1:
-        symbol = st.selectbox("Asset", SYMBOLS, index=0)
-    with ctrl2:
-        timeframe = st.selectbox("Timeframe", TIMEFRAMES, index=2)  # default 15m
-    with ctrl3:
-        st.write("")
-        st.write("")
-        run = st.button("▶ Run Analysis", use_container_width=True, type="primary")
+    symbol    = st.selectbox("Asset", SYMBOLS)
+    timeframe = st.selectbox("Timeframe", TIMEFRAMES, index=2)
 
-    # ----- Main layout: chart + panel -----
-    chart_col, panel_col = st.columns([65, 35])
+    st.divider()
+    st.markdown(
+        "<div style='color:#e6edf3;font-size:.85em;font-weight:600;margin-bottom:4px'>"
+        "🔑 Claude API Key</div>"
+        "<div style='color:#6e7681;font-size:.75em;margin-bottom:8px'>"
+        "For AI narrative after engine analysis</div>",
+        unsafe_allow_html=True,
+    )
+    api_key = st.text_input(
+        label="api_key",
+        type="password",
+        placeholder="sk-ant-api03-...",
+        label_visibility="collapsed",
+    )
+    if api_key:
+        st.success("Claude narrative enabled ✓", icon="🤖")
+    else:
+        st.caption("Engines run fully without a key.")
 
-    with chart_col:
-        components.html(
-            _tradingview_widget(symbol, timeframe),
-            height=530,
-            scrolling=False,
-        )
+    st.divider()
+    run = st.button("▶  Run Analysis", use_container_width=True, type="primary")
+    st.divider()
 
-    with panel_col:
-        if not run:
-            st.info("Select an asset and timeframe, then click **▶ Run Analysis**.")
-            return
+    st.markdown(
+        "<div style='color:#484f58;font-size:.72em;line-height:1.8'>"
+        "Charts · TradingView<br>"
+        "Data · Yahoo Finance<br>"
+        "Engines · Fibrios<br>"
+        "AI · Claude Haiku</div>",
+        unsafe_allow_html=True,
+    )
 
-        with st.spinner(f"Running Fibrios engines on {symbol}/{timeframe}…"):
-            candles = _fetch_candles(symbol, timeframe)
-            price = _fetch_price(symbol)
+# ── Header ────────────────────────────────────────────────────────────────────
+st.markdown(
+    f"<div style='font-size:1.1em;font-weight:700;color:#e6edf3;margin-bottom:4px'>"
+    f"{symbol} &nbsp;·&nbsp; {timeframe}</div>",
+    unsafe_allow_html=True,
+)
 
-            elliott_result = analyze_elliott(candles)
-            price_action_result = analyze_price_action(candles)
-            market_result = analyze_market_structure(candles)
-            liquidity_result = analyze_liquidity(candles)
+# ── TradingView chart ─────────────────────────────────────────────────────────
+components.html(_tv_widget(symbol, timeframe), height=510, scrolling=False)
 
-            final_report = evaluate_confidence(
-                elliott=elliott_result,
-                price_action=price_action_result,
-                market_structure=market_result,
-                liquidity=liquidity_result,
-            )
+if not run:
+    st.markdown(
+        "<div style='background:#161b22;border:1px solid #21262d;border-radius:10px;"
+        "padding:20px 24px;color:#8b949e;text-align:center;margin-top:12px'>"
+        "Select an asset and timeframe in the sidebar, then click <b style='color:#e6edf3'>▶ Run Analysis</b>."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    st.stop()
 
-            trade_plan = generate_trade_plan(
-                signal=final_report["signal"],
-                confidence=final_report["confidence"],
-                price=price,
-            )
+# ── Run engines ───────────────────────────────────────────────────────────────
+with st.spinner("Running Fibrios engines…"):
+    candles = _get_candles(symbol, timeframe)
+    price   = _get_price(symbol)
 
-        # ---- Signal header ----
-        signal = final_report["signal"]
-        confidence = final_report["confidence"]
-        color = "#00c853" if "BUY" in signal else ("#e53935" if "SELL" in signal else "#ffa726")
-        st.markdown(
-            f"<div style='background:{color}22;border-left:4px solid {color};"
-            f"padding:12px 16px;border-radius:6px;margin-bottom:12px'>"
-            f"<b style='font-size:1.3em;color:{color}'>{signal}</b> &nbsp;"
-            f"<span style='color:#ccc'>Confidence {confidence}/10</span></div>",
-            unsafe_allow_html=True,
-        )
+    e_res = analyze_elliott(candles)
+    p_res = analyze_price_action(candles)
+    m_res = analyze_market_structure(candles)
+    l_res = analyze_liquidity(candles)
+    final = evaluate_confidence(
+        elliott=e_res, price_action=p_res,
+        market_structure=m_res, liquidity=l_res,
+    )
+    plan = generate_trade_plan(
+        signal=final["signal"],
+        confidence=final["confidence"],
+        price=price,
+    )
 
-        if price:
-            st.metric("Current Price", f"{price:,.5g}")
+signal     = final["signal"]
+confidence = final["confidence"]
 
-        # ---- Engine results ----
-        st.subheader("Engine Analysis")
-        _section(
-            "Elliott Wave",
-            elliott_result,
-            ["wave", "bias"],
-        )
-        _section(
-            "Price Action",
-            price_action_result,
-            ["pattern", "bias"],
-        )
-        _section(
-            "Market Structure",
-            market_result,
-            ["structure", "trend"],
-        )
-        _section(
-            "Liquidity",
-            liquidity_result,
-            ["sweep", "bias"],
-        )
+# ── Signal banner ─────────────────────────────────────────────────────────────
+if "BUY" in signal:
+    bg, border, icon = "#0d2818", "#3fb950", "🟢"
+elif "SELL" in signal:
+    bg, border, icon = "#2d0f0f", "#f85149", "🔴"
+else:
+    bg, border, icon = "#1c1a0a", "#d29922", "🟡"
 
-        # ---- Trade Plan ----
-        st.subheader("Trade Plan")
-        t1, t2 = st.columns(2)
-        t1.metric("Entry (Balanced)", trade_plan["entry_balanced"])
-        t2.metric("Stop Loss", trade_plan["stop_loss"])
-        tp1_col, tp2_col, tp3_col = st.columns(3)
-        tp1_col.metric("TP1", trade_plan["tp1"])
-        tp2_col.metric("TP2", trade_plan["tp2"])
-        tp3_col.metric("TP3", trade_plan["tp3"])
-        st.caption(f"Risk/Reward: **{trade_plan['risk_reward']}** · "
-                   f"Aggressive entry: {trade_plan['entry_aggressive']} · "
-                   f"Conservative entry: {trade_plan['entry_conservative']}")
+st.markdown(f"""
+<div style="background:{bg};border-left:4px solid {border};border-radius:10px;
+padding:16px 24px;margin:14px 0;display:flex;align-items:center;justify-content:space-between;">
+  <div>
+    <div style="color:#8b949e;font-size:.7em;text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px">
+      Fibrios Signal
+    </div>
+    <div style="color:{border};font-size:1.7em;font-weight:800;letter-spacing:.04em">
+      {icon} {signal}
+    </div>
+  </div>
+  <div style="text-align:right">
+    <div style="color:#8b949e;font-size:.7em;text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px">
+      Confidence
+    </div>
+    <div style="color:#e6edf3;font-size:1.7em;font-weight:800">
+      {confidence}<span style="font-size:.55em;color:#8b949e"> / 10</span>
+    </div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
-        # ---- Claude Narrative (if API key present) ----
-        signal_context = {
-            "symbol": symbol,
-            "timeframe": timeframe,
-            "signal": signal,
-            "confidence": confidence,
-            "elliott_bias": elliott_result["bias"],
-            "market_structure": market_result["structure"],
-            "liquidity": liquidity_result["sweep"],
-            "price_action": price_action_result["pattern"],
-        }
+# Price row
+if price:
+    price_fmt = f"{price:,.5g}"
+    st.markdown(
+        f"<span style='background:#161b22;border:1px solid #30363d;border-radius:20px;"
+        f"padding:4px 14px;font-family:monospace;font-size:.9em;color:#e6edf3'>"
+        f"💰 {symbol} &nbsp;{price_fmt}</span>"
+        f"<span style='color:#484f58;font-size:.72em;margin-left:10px'>"
+        f"Yahoo Finance · may differ slightly from TradingView spot</span>",
+        unsafe_allow_html=True,
+    )
 
-        with st.spinner("Generating Claude narrative…"):
-            narrative = _claude_narrative(signal_context)
+# ── Engine cards ──────────────────────────────────────────────────────────────
+st.markdown("<div class='sec-title'>Engine Analysis</div>", unsafe_allow_html=True)
+r1c1, r1c2 = st.columns(2)
+r2c1, r2c2 = st.columns(2)
 
-        if narrative:
-            st.subheader("Claude Narrative")
-            st.markdown(f"> {narrative.get('market_summary', '')}")
-            with st.expander("Full narrative"):
-                if narrative.get("trade_reasoning"):
-                    st.markdown(f"**Reasoning:** {narrative['trade_reasoning']}")
-                if narrative.get("risks"):
-                    st.markdown(f"**Risks:** {narrative['risks']}")
-                if narrative.get("institutional_narrative"):
-                    st.markdown(f"**Institutional:** {narrative['institutional_narrative']}")
-        else:
-            st.caption("Set `ANTHROPIC_API_KEY` to enable Claude narrative.")
+_engine_card(r1c1, "Elliott Wave",     e_res.get("wave","—"),      e_res.get("bias","—"), e_res.get("reason",""), e_res.get("score",5))
+_engine_card(r1c2, "Market Structure", m_res.get("structure","—"), m_res.get("trend","—"), m_res.get("reason",""), m_res.get("score",5))
+_engine_card(r2c1, "Price Action",     p_res.get("pattern","—"),   p_res.get("bias","—"), p_res.get("reason",""), p_res.get("score",5))
+_engine_card(r2c2, "Liquidity",        l_res.get("sweep","—"),     l_res.get("bias","—"), l_res.get("reason",""), l_res.get("score",5))
 
+# ── Trade plan ────────────────────────────────────────────────────────────────
+st.markdown("<div class='sec-title'>Trade Plan</div>", unsafe_allow_html=True)
+tp1, tp2 = st.columns(2)
 
-if __name__ == "__main__":
-    main()
+with tp1:
+    st.markdown(f"""
+    <div class="eng-card">
+      <div class="eng-title">Entry &amp; Stop</div>
+      <div class="tp-row">
+        <span class="tp-label">Aggressive entry</span>
+        <span class="tp-value">{plan['entry_aggressive']}</span>
+      </div>
+      <div class="tp-row">
+        <span class="tp-label">Balanced entry</span>
+        <span style="color:#388bfd;font-weight:700;font-family:monospace">{plan['entry_balanced']}</span>
+      </div>
+      <div class="tp-row">
+        <span class="tp-label">Conservative entry</span>
+        <span class="tp-value">{plan['entry_conservative']}</span>
+      </div>
+      <div class="tp-row" style="border:none">
+        <span class="tp-label">Stop Loss</span>
+        <span style="color:#f85149;font-weight:700;font-family:monospace">{plan['stop_loss']}</span>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with tp2:
+    st.markdown(f"""
+    <div class="eng-card">
+      <div class="eng-title">Targets</div>
+      <div class="tp-row">
+        <span class="tp-label">TP1</span>
+        <span style="color:#3fb950;font-weight:700;font-family:monospace">{plan['tp1']}</span>
+      </div>
+      <div class="tp-row">
+        <span class="tp-label">TP2</span>
+        <span style="color:#3fb950;font-weight:700;font-family:monospace">{plan['tp2']}</span>
+      </div>
+      <div class="tp-row">
+        <span class="tp-label">TP3</span>
+        <span style="color:#3fb950;font-weight:700;font-family:monospace">{plan['tp3']}</span>
+      </div>
+      <div class="tp-row" style="border:none">
+        <span class="tp-label">Risk / Reward</span>
+        <span style="color:#d29922;font-weight:700;font-family:monospace">{plan['risk_reward']}</span>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ── Claude narrative ──────────────────────────────────────────────────────────
+st.markdown("<div class='sec-title'>Claude Narrative</div>", unsafe_allow_html=True)
+
+if not api_key:
+    st.markdown("""
+    <div style="background:#161b22;border:1px dashed #30363d;border-radius:10px;
+    padding:28px;text-align:center;color:#6e7681;">
+      <div style="font-size:1.5em;margin-bottom:8px">🔑</div>
+      Enter your <b style="color:#e6edf3">Claude API Key</b> in the sidebar to unlock AI narrative.<br>
+      <span style="font-size:.82em">Fibrios engines are running fully without it.</span>
+    </div>
+    """, unsafe_allow_html=True)
+else:
+    ctx = {
+        "symbol": symbol, "timeframe": timeframe,
+        "signal": signal, "confidence": confidence,
+        "elliott_bias": e_res["bias"],
+        "market_structure": m_res["structure"],
+        "liquidity": l_res["sweep"],
+        "price_action": p_res["pattern"],
+    }
+    with st.spinner("Generating Claude narrative…"):
+        narrative = _get_narrative(ctx, api_key)
+
+    if narrative:
+        for label, key in [
+            ("Market Summary",        "market_summary"),
+            ("Trade Reasoning",       "trade_reasoning"),
+            ("Risks",                 "risks"),
+            ("Institutional Narrative","institutional_narrative"),
+        ]:
+            text = narrative.get(key, "")
+            if text:
+                st.markdown(f"""
+                <div class="narr-block">
+                  <div class="narr-label">{label}</div>
+                  {text}
+                </div>
+                """, unsafe_allow_html=True)
