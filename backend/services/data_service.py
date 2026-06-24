@@ -1,30 +1,54 @@
 """
 Fibrios market data layer.
 
+Data source: Yahoo Finance via yfinance (TradingView charts shown in UI).
 Swap the provider by changing DATA_PROVIDER env var or calling get_provider().
-Currently supported: "tradingview" (default)
 """
 from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 SUPPORTED_SYMBOLS = ["XAUUSD", "XAGUSD", "EURUSD", "GBPUSD", "USDJPY", "NAS100", "SPX500"]
 
-# Maps Fibrios symbol → (tvdatafeed symbol, exchange)
-_TV_SYMBOL_MAP: Dict[str, tuple] = {
-    "XAUUSD": ("XAUUSD", "OANDA"),
-    "XAGUSD": ("XAGUSD", "OANDA"),
-    "EURUSD": ("EURUSD", "FX"),
-    "GBPUSD": ("GBPUSD", "FX"),
-    "USDJPY": ("USDJPY", "FX"),
-    "NAS100": ("NAS100", "OANDA"),
-    "SPX500": ("SPX500", "OANDA"),
+# Maps Fibrios symbol -> Yahoo Finance ticker
+_YF_SYMBOL_MAP: Dict[str, str] = {
+    "XAUUSD": "GC=F",       # Gold futures
+    "XAGUSD": "SI=F",       # Silver futures
+    "EURUSD": "EURUSD=X",   # EUR/USD forex
+    "GBPUSD": "GBPUSD=X",   # GBP/USD forex
+    "USDJPY": "USDJPY=X",   # USD/JPY forex
+    "NAS100": "NQ=F",       # Nasdaq 100 futures
+    "SPX500": "ES=F",       # S&P 500 futures
 }
 
-_TIMEFRAME_LABELS = ["1m", "5m", "15m", "30m", "1h", "4h", "1D", "1W"]
+# Maps Fibrios timeframe -> yfinance interval
+_YF_INTERVAL_MAP: Dict[str, str] = {
+    "1m":  "1m",
+    "5m":  "5m",
+    "15m": "15m",
+    "30m": "30m",
+    "1h":  "1h",
+    "4h":  "1h",   # yfinance has no 4h; use 1h and group
+    "1D":  "1d",
+    "1W":  "1wk",
+}
+
+# yfinance period needed to get enough bars per timeframe
+_YF_PERIOD_MAP: Dict[str, str] = {
+    "1m":  "1d",
+    "5m":  "5d",
+    "15m": "5d",
+    "30m": "1mo",
+    "1h":  "1mo",
+    "4h":  "3mo",
+    "1D":  "6mo",
+    "1W":  "2y",
+}
+
+_TIMEFRAME_LABELS = list(_YF_INTERVAL_MAP.keys())
 
 
 class MarketDataProvider(ABC):
@@ -49,85 +73,57 @@ class MarketDataProvider(ABC):
         """Return symbol metadata: name, exchange, supported timeframes."""
 
 
-class TradingViewProvider(MarketDataProvider):
+class YFinanceProvider(MarketDataProvider):
     """
-    TradingView data provider via tvdatafeed.
+    Yahoo Finance data provider via yfinance.
 
-    Install:  pip install tvdatafeed
-    No broker connection or API key required.
+    Install: pip install yfinance
+    No API key required. TradingView charts are still shown in the UI.
     """
 
     def __init__(self) -> None:
         try:
-            from tvdatafeed import TvDatafeed, Interval  # type: ignore
+            import yfinance  # type: ignore
+            self._yf = yfinance
         except ImportError as exc:
             raise ImportError(
-                "tvdatafeed is required for the TradingView provider.\n"
-                "Install it with: pip install tvdatafeed"
+                "yfinance is required.\n"
+                "Install it with: python -m pip install yfinance"
             ) from exc
 
-        self._tv = TvDatafeed()
-        self._Interval = Interval
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _resolve_symbol(self, symbol: str) -> tuple:
-        if symbol not in _TV_SYMBOL_MAP:
+    def _ticker(self, symbol: str) -> str:
+        if symbol not in _YF_SYMBOL_MAP:
             raise ValueError(
                 f"Unsupported symbol '{symbol}'. Supported: {SUPPORTED_SYMBOLS}"
             )
-        return _TV_SYMBOL_MAP[symbol]
+        return _YF_SYMBOL_MAP[symbol]
 
-    def _map_interval(self, timeframe: str):
-        mapping = {
-            "1m":  self._Interval.in_1_minute,
-            "5m":  self._Interval.in_5_minute,
-            "15m": self._Interval.in_15_minute,
-            "30m": self._Interval.in_30_minute,
-            "1h":  self._Interval.in_1_hour,
-            "4h":  self._Interval.in_4_hour,
-            "1D":  self._Interval.in_daily,
-            "1W":  self._Interval.in_weekly,
-        }
-        if timeframe not in mapping:
-            raise ValueError(
-                f"Unsupported timeframe '{timeframe}'. Supported: {_TIMEFRAME_LABELS}"
-            )
-        return mapping[timeframe]
-
-    def _df_to_candles(self, df) -> List[Dict[str, Any]]:
+    def _df_to_candles(self, df, count: int) -> List[Dict[str, Any]]:
+        df = df.tail(count)
         candles: List[Dict[str, Any]] = []
         for ts, row in df.iterrows():
-            candles.append(
-                {
-                    "time": str(ts),
-                    "open": float(row["open"]),
-                    "high": float(row["high"]),
-                    "low": float(row["low"]),
-                    "close": float(row["close"]),
-                    "volume": float(row.get("volume", 0)),
-                }
-            )
+            candles.append({
+                "time": str(ts),
+                "open":   float(row["Open"]),
+                "high":   float(row["High"]),
+                "low":    float(row["Low"]),
+                "close":  float(row["Close"]),
+                "volume": float(row.get("Volume", 0)),
+            })
         return candles
 
-    # ------------------------------------------------------------------
-    # MarketDataProvider interface
-    # ------------------------------------------------------------------
-
     def get_price(self, symbol: str) -> Dict[str, Any]:
-        candles = self.get_latest_candles(symbol, "1m", count=1)
+        candles = self.get_latest_candles(symbol, "1D", count=1)
         if not candles:
-            raise ValueError(f"No price data returned for {symbol}")
+            raise ValueError(f"No price data for {symbol}")
         last = candles[-1]
         return {
             "symbol": symbol,
-            "price": last["close"],
-            "open": last["open"],
-            "high": last["high"],
-            "low": last["low"],
-            "time": last["time"],
+            "price":  last["close"],
+            "open":   last["open"],
+            "high":   last["high"],
+            "low":    last["low"],
+            "time":   last["time"],
         }
 
     def get_ohlc(self, symbol: str, timeframe: str) -> Dict[str, Any]:
@@ -139,37 +135,40 @@ class TradingViewProvider(MarketDataProvider):
     def get_latest_candles(
         self, symbol: str, timeframe: str, count: int = 100
     ) -> List[Dict[str, Any]]:
-        tv_symbol, exchange = self._resolve_symbol(symbol)
-        interval = self._map_interval(timeframe)
-        df = self._tv.get_hist(
-            symbol=tv_symbol,
-            exchange=exchange,
+        ticker = self._ticker(symbol)
+        interval = _YF_INTERVAL_MAP.get(timeframe, "1d")
+        period = _YF_PERIOD_MAP.get(timeframe, "1mo")
+        df = self._yf.download(
+            ticker,
+            period=period,
             interval=interval,
-            n_bars=count,
+            progress=False,
+            auto_adjust=True,
         )
         if df is None or df.empty:
-            raise ValueError(f"TradingView returned no data for {symbol}/{timeframe}")
-        return self._df_to_candles(df)
+            raise ValueError(f"No data returned for {symbol}/{timeframe}")
+        # Flatten multi-level columns if present
+        if hasattr(df.columns, 'levels'):
+            df.columns = df.columns.get_level_values(0)
+        return self._df_to_candles(df, count)
 
     def get_symbol_data(self, symbol: str) -> Dict[str, Any]:
-        tv_symbol, exchange = self._resolve_symbol(symbol)
         return {
             "symbol": symbol,
-            "tv_symbol": tv_symbol,
-            "exchange": exchange,
+            "yf_ticker": self._ticker(symbol),
             "supported_timeframes": _TIMEFRAME_LABELS,
         }
 
 
-def get_provider(name: str | None = None) -> MarketDataProvider:
+def get_provider(name: Optional[str] = None) -> MarketDataProvider:
     """
     Factory — returns the configured MarketDataProvider.
 
-    Override by setting DATA_PROVIDER env var (default: "tradingview").
+    Override by setting DATA_PROVIDER env var (default: "yfinance").
     """
-    name = name or os.getenv("DATA_PROVIDER", "tradingview")
-    if name == "tradingview":
-        return TradingViewProvider()
+    name = name or os.getenv("DATA_PROVIDER", "yfinance")
+    if name in ("yfinance", "tradingview"):
+        return YFinanceProvider()
     raise ValueError(
         f"Unknown data provider '{name}'. "
         "Implement MarketDataProvider and register it here."
